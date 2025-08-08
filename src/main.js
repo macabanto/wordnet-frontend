@@ -199,31 +199,35 @@ document.addEventListener('mousemove', event => {
 
 // 
 function expandFromNode(centerNode, termDoc) {
-  nodeGroup.userData.center = centerNode;
-  nodeObjects.length = 0; // now these are the only clickable nodes
+  // --- 1) Bake current group transform into all child positions ---
+  nodeGroup.children.forEach(obj => {
+    obj.position.add(nodeGroup.position); // shift positions into world space
+  });
+  linkGroup.children.forEach(obj => {
+    obj.position.add(linkGroup.position);
+  });
 
-  // 🔍 First, let's see what the entire termDoc looks like
+  // --- 2) Reset group translation to 0,0,0 ---
+  nodeGroup.position.set(0, 0, 0);
+  linkGroup.position.set(0, 0, 0);
+
+  // --- 3) Update reference to new center ---
+  nodeGroup.userData.center = centerNode;
+  nodeObjects.length = 0; // only new nodes will be clickable
+
   console.log('🔍 Full termDoc:', termDoc);
   console.log('🔍 linked_synonyms array:', termDoc.linked_synonyms);
 
   termDoc.linked_synonyms.forEach((syn, index) => {
-    // 🔍 Debug each synonym object FIRST
     console.log(`🔍 Synonym ${index}:`, syn);
-    console.log(`🔍 syn.id:`, syn.id);
-    console.log(`🔍 syn._id:`, syn._id);
-    console.log(`🔍 syn.id?.$oid:`, syn.id?.$oid);
 
     const sprite = createTextSprite(syn.term);
     const getId = (obj) => obj.id?.$oid || obj.id || obj._id || null;
-    const extractedId = getId(syn);
-    
-    console.log(`🔍 Extracted ID for ${syn.term}:`, extractedId);
-    
-    sprite.userData = { id: extractedId, term: syn.term, line: null };
+    sprite.userData = { id: getId(syn), term: syn.term, line: null };
 
     const finalScale = sprite.scale.clone();
     sprite.scale.set(0, 0, 0);
-    sprite.position.copy(centerNode.position);
+    sprite.position.copy(centerNode.position); // now relative to new baked origin
     nodeGroup.add(sprite);
     nodeObjects.push(sprite);
 
@@ -252,7 +256,6 @@ function expandFromNode(centerNode, termDoc) {
 
       if (t < 1) requestAnimationFrame(animateOut);
     }
-    
     requestAnimationFrame(animateOut);
   });
 }
@@ -364,6 +367,7 @@ async function loadTermById(id) {
 
 // === entry point/initial call to db 
 // ultimately replace with findOne( random _id )
+
 fetch('/api/term/6890af9c82f836005c903e18')
   .then(res => {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
