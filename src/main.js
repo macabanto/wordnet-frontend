@@ -26,6 +26,10 @@ window.addEventListener('resize', () => {
 const nodeObjects = []; 
 const nodeGroup = new THREE.Group();
 const linkGroup = new THREE.Group();
+let centeredNode = null;
+let isTransitioning = false;
+const visited = new Set(); // optional: avoid refetching same term
+
 scene.add(nodeGroup);
 scene.add(linkGroup);
 
@@ -63,46 +67,64 @@ function createTextSprite(text, color = '#bfbfbfff') {
 }
 
 function initializeGraph(termData) {
+  // optional: dispose old stuff to avoid leaks
+  nodeGroup.children.forEach(o => { o.material?.map?.dispose?.(); o.material?.dispose?.(); o.geometry?.dispose?.(); });
+  linkGroup.children.forEach(o => { o.material?.dispose?.(); o.geometry?.dispose?.(); });
+
   nodeGroup.clear();
   linkGroup.clear();
   nodeObjects.length = 0;
 
+  // 🔍 Debug the initial term data
+  console.log('🔍 Initial termData:', termData);
+
+  // center term
   const termSprite = createTextSprite(termData.term, '#909090ff');
   termSprite.position.set(0, 0, 0);
+
+  // ✅ Use the same ID extraction helper
+  const getId = (obj) => obj._id?.$oid || obj._id || obj.id?.$oid || obj.id || null;
+  const centerTermId = getId(termData);
+  
+  console.log('🔍 Center term ID:', centerTermId);
+
+  termSprite.userData = {
+    id: centerTermId,
+    term: termData.term,
+    line: null
+  };
+
   nodeGroup.add(termSprite);
+  nodeGroup.userData.center = termSprite;
 
-  // We'll store lines in a new structure to keep track of connections
-  nodeObjects.term = termSprite; // Save reference to center node
-  nodeObjects.edges = [];        // Array of { line, targetNode }
-
-  termData.linked_synonyms.forEach(syn => {
+  // synonyms
+  termData.linked_synonyms.forEach((syn, index) => {
+    console.log(`🔍 Initial synonym ${index}:`, syn);
+    
     const sprite = createTextSprite(syn.term);
     sprite.position.set(syn.x, syn.y, syn.z);
+    
+    const synonymId = getId(syn);
+    console.log(`🔍 Initial synonym ${syn.term} ID:`, synonymId);
+    
+    sprite.userData = {
+      id: synonymId,
+      term: syn.term,
+      line: null
+    };
     nodeGroup.add(sprite);
     nodeObjects.push(sprite);
 
-    // Draw and store line
+    // line to center
     const points = [termSprite.position.clone(), sprite.position.clone()];
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    const material = new THREE.LineBasicMaterial({ color: 0xaaaaaa });
+    const material = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 1 });
     const line = new THREE.Line(geometry, material);
     linkGroup.add(line);
 
-    // Track the connection so we can animate it later
-    nodeObjects.edges.push({ line, targetNode: sprite });
+    sprite.userData.line = line; // 🔗 link sprite ⇄ line
   });
 }
-
-fetch('/api/term/6890af9c82f836005c903e18')
-  .then(res => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  })
-  .then(data => {
-    console.log('✅ Fetched term:', data);
-    initializeGraph(data);
-  })
-  .catch(err => console.error("❌ Failed to load term:", err));
 
 let rotation = { x: 0, y: 0 };
 let rotationVelocity = { x: 0, y: 0 };
@@ -118,22 +140,42 @@ document.addEventListener('mousedown', event => {
   rotationVelocity = { x: 0, y: 0 };
 });
 
-document.addEventListener('mouseup', event => {
-  if (clickCandidate) {
-    raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObjects(nodeObjects);
-
-    if (intersects.length > 0) {
-      const clickedNode = intersects[0].object;
-
-      // Recenter around the node, then clean up the others
-      recenterAroundNode(clickedNode, () => {
-        focusOnNode(clickedNode);
-      });
-    }
-  }
-
+document.addEventListener('mouseup', async () => {
+  // stop drag state first
+  const wasDragging = isDragging;
   isDragging = false;
+
+  if (!clickCandidate) return;           // mouse moved too much -> not a click
+  clickCandidate = false;                // reset for next interaction
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(nodeObjects);
+  if (intersects.length === 0) return;
+
+  const clickedNode = intersects[0].object;
+  if (clickedNode === centeredNode) return;  // don't recenter on the already-centered node
+  if (isTransitioning) return;               // ignore while an animation is running
+
+  isTransitioning = true;
+  centeredNode = clickedNode;
+
+  try {
+    // 1) pan & collapse others (wait for it to finish)
+    await refocusToNode(clickedNode);
+
+    // 2) fetch by _id
+    const id = clickedNode.userData?.id;
+    console.log('👉 fetch id:', clickedNode.userData?.id, 'term:', clickedNode.userData?.term);
+    if (!id) return;
+    if (!visited.has(id)) visited.add(id);
+    const data = await loadTermById(clickedNode.userData.id);
+    // 3) expand outward
+    expandFromNode(clickedNode, data);
+  } catch (err) {
+    console.error('refocus/fetch error:', err);
+  } finally {
+    isTransitioning = false;
+  }
 });
 
 document.addEventListener('mousemove', event => {
@@ -155,73 +197,141 @@ document.addEventListener('mousemove', event => {
   }
 });
 
-function focusOnNode(clickedNode) {
-  const duration = 1000;
-  const start = performance.now();
-  const targetPos = new THREE.Vector3(0, 0, 0);
+// 
+function expandFromNode(centerNode, termDoc) {
+  nodeGroup.userData.center = centerNode;
+  nodeObjects.length = 0; // now these are the only clickable nodes
 
-  const movingNodes = nodeObjects.filter(node => node !== clickedNode);
-  const startPositions = movingNodes.map(node => node.position.clone());
-  const startScales = movingNodes.map(node => node.scale.clone());
-  const targetScale = new THREE.Vector3(0, 0, 0); // shrink to nothing
+  // 🔍 First, let's see what the entire termDoc looks like
+  console.log('🔍 Full termDoc:', termDoc);
+  console.log('🔍 linked_synonyms array:', termDoc.linked_synonyms);
 
-  function animateFocus(time) {
-    const t = Math.min((time - start) / duration, 1);
-    const easedT = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+  termDoc.linked_synonyms.forEach((syn, index) => {
+    // 🔍 Debug each synonym object FIRST
+    console.log(`🔍 Synonym ${index}:`, syn);
+    console.log(`🔍 syn.id:`, syn.id);
+    console.log(`🔍 syn._id:`, syn._id);
+    console.log(`🔍 syn.id?.$oid:`, syn.id?.$oid);
 
-    movingNodes.forEach((node, i) => {
-      // Move toward center
-      const newPos = startPositions[i].clone().lerp(targetPos, easedT);
-      node.position.copy(newPos);
+    const sprite = createTextSprite(syn.term);
+    const getId = (obj) => obj.id?.$oid || obj.id || obj._id || null;
+    const extractedId = getId(syn);
+    
+    console.log(`🔍 Extracted ID for ${syn.term}:`, extractedId);
+    
+    sprite.userData = { id: extractedId, term: syn.term, line: null };
 
-      // Shrink down
-      const newScale = startScales[i].clone().lerp(targetScale, easedT);
-      node.scale.copy(newScale);
-    });
+    const finalScale = sprite.scale.clone();
+    sprite.scale.set(0, 0, 0);
+    sprite.position.copy(centerNode.position);
+    nodeGroup.add(sprite);
+    nodeObjects.push(sprite);
 
-    // Remove all lines except the one connecting termSprite and clickedNode
-linkGroup.children.forEach((line) => {
-  const positions = line.geometry.attributes.position.array;
+    const geometry = new THREE.BufferGeometry().setFromPoints([
+      centerNode.position.clone(), centerNode.position.clone()
+    ]);
+    const material = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.0 });
+    const line = new THREE.Line(geometry, material);
+    linkGroup.add(line);
+    sprite.userData.line = line;
 
-  const endPos = new THREE.Vector3(positions[3], positions[4], positions[5]);
+    const targetPos = new THREE.Vector3(syn.x, syn.y, syn.z);
+    const duration = 900 + Math.random() * 200;
+    const start = performance.now();
 
-  const matchesClickedNode = endPos.distanceTo(clickedNode.position) < 0.001;
+    function animateOut(time) {
+      const t = Math.min((time - start) / duration, 1);
+      const ease = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
 
-  if (!matchesClickedNode) {
-    linkGroup.remove(line);
-  }
-});
+      sprite.position.copy(centerNode.position.clone().lerp(targetPos, ease));
+      sprite.scale.copy(finalScale.clone().multiplyScalar(ease));
 
-    if (t < 1) requestAnimationFrame(animateFocus);
-  }
+      line.geometry.setFromPoints([centerNode.position, sprite.position]);
+      line.geometry.attributes.position.needsUpdate = true;
+      line.material.opacity = ease;
 
-  requestAnimationFrame(animateFocus);
+      if (t < 1) requestAnimationFrame(animateOut);
+    }
+    
+    requestAnimationFrame(animateOut);
+  });
 }
 
-function recenterAroundNode(targetNode, onComplete) {
-  const duration = 1000;
-  const start = performance.now();
+function refocusToNode(clickedNode) {
+  return new Promise(resolve => {
+    const center = nodeGroup.userData.center; // original term
+    if (!center) { resolve(); return; }
 
-  const nodeLocalPos = targetNode.position.clone();  // Use local coords
-  const startGroupPos = nodeGroup.position.clone();
-  const endGroupPos = startGroupPos.clone().sub(nodeLocalPos);
+    const duration = 1000;
+    const start = performance.now();
 
-  function animateRecenter(time) {
-    const t = Math.min((time - start) / duration, 1);
-    const easedT = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
+    // move whole group so clicked ends up at origin
+    const startGroupPos = nodeGroup.position.clone();
+    const endGroupPos = startGroupPos.clone().sub(clickedNode.position.clone());
 
-    const newGroupPos = startGroupPos.clone().lerp(endGroupPos, easedT);
-    nodeGroup.position.copy(newGroupPos);
-    linkGroup.position.copy(newGroupPos);
+    // collapse others into original center
+    const targetLocal = center.position.clone();
+    const collapseList = nodeObjects.filter(n => n !== clickedNode);
+    const startPos = collapseList.map(n => n.position.clone());
+    const startScale = collapseList.map(n => n.scale.clone());
 
-    if (t < 1) {
-      requestAnimationFrame(animateRecenter);
-    } else if (onComplete) {
-      onComplete();
+    function tick(time) {
+      const t = Math.min((time - start) / duration, 1);
+      const ease = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
+
+      // recenter/pan
+      const newGroupPos = startGroupPos.clone().lerp(endGroupPos, ease);
+      nodeGroup.position.copy(newGroupPos);
+      linkGroup.position.copy(newGroupPos);
+
+      // collapse others
+      collapseList.forEach((node, i) => {
+        node.position.copy(startPos[i]).lerp(targetLocal, ease);
+        node.scale.copy(startScale[i].clone().lerp(new THREE.Vector3(0,0,0), ease));
+
+        const line = node.userData?.line;
+        if (line) {
+          line.geometry.setFromPoints([center.position, node.position]);
+          line.geometry.attributes.position.needsUpdate = true;
+          line.material.transparent = true;
+          line.material.opacity = 1 - ease;
+        }
+      });
+
+      // keep clicked edge updated if it exists (optional)
+      const clickedLine = clickedNode.userData?.line;
+      if (clickedLine) {
+        clickedLine.geometry.setFromPoints([center.position, clickedNode.position]);
+        clickedLine.geometry.attributes.position.needsUpdate = true;
+      }
+
+      if (t < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        // cleanup collapsed nodes & lines
+        collapseList.forEach(node => {
+          const line = node.userData?.line;
+          if (line) {
+            linkGroup.remove(line);
+            line.geometry.dispose();
+            line.material.dispose();
+          }
+          nodeGroup.remove(node);
+          node.material?.map?.dispose?.();
+          node.material?.dispose?.();
+          node.geometry?.dispose?.();
+
+          const idx = nodeObjects.indexOf(node);
+          if (idx !== -1) nodeObjects.splice(idx, 1);
+        });
+
+        nodeGroup.userData.center = clickedNode; // clicked becomes new root
+        resolve();
+      }
     }
-  }
 
-  requestAnimationFrame(animateRecenter);
+    requestAnimationFrame(tick);
+  });
 }
 
 function animate() {
@@ -238,4 +348,30 @@ function animate() {
   scene.rotation.y = rotation.y;
   renderer.render(scene, camera);
 }
+
+async function loadTermById(id) {
+  console.log('🚀 Fetching term with ID:', id);
+  const res = await fetch('/api/term/' + id);
+  console.log('📡 Response status:', res.status);
+  if (!res.ok) {
+    console.error('❌ API Error:', res.status, res.statusText);
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+  const data = await res.json();
+  console.log('✅ Received data:', data);
+  return data;
+}
+
+// === entry point/initial call to db 
+// ultimately replace with findOne( random _id )
+fetch('/api/term/6890af9c82f836005c903e18')
+  .then(res => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  })
+  .then(data => {
+    console.log('✅ Fetched term:', data);
+    initializeGraph(data);
+  })
+  .catch(err => console.error("❌ Failed to load term:", err));
 animate();

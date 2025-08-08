@@ -34,8 +34,6 @@ async function start() {
   }
 }
 
-app.get('/ping', (req, res) => res.send('pong'));
-
 app.get('/api/term/:id', async (req, res) => {
   const { id } = req.params;
 
