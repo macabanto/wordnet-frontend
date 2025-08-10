@@ -14,6 +14,7 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio || 1);
 renderer.setSize(width, height);
 document.getElementById('container').appendChild(renderer.domElement);
 
