@@ -9,8 +9,10 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017'; // use 1
 const DB_NAME = process.env.DB_NAME || 'lemmas';
 const COLLECTION = process.env.COLLECTION || 'lemmas-linked';
 
-app.use(cors());
-
+app.use(cors({
+  origin: ['https://macabanto.github.io'],
+  methods: ['GET'],
+}));
 // Fail fast if Mongo isn't reachable
 const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 3000 });
 let collection;
@@ -33,6 +35,8 @@ async function start() {
     process.exit(1);
   }
 }
+//testing
+app.get('/ping', (req, res) => res.send('pong'));
 
 app.get('/api/term/:id', async (req, res) => {
   const { id } = req.params;

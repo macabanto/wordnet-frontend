@@ -2,6 +2,8 @@ import * as THREE from 'three';
 console.log('✅ main.js loaded');
 const width = window.innerWidth;
 const height = window.innerHeight;
+const API_BASE = import.meta.env.VITE_API_BASE;
+
 
 // === Setup scene ===
 const scene = new THREE.Scene();
@@ -354,7 +356,7 @@ function animate() {
 
 async function loadTermById(id) {
   console.log('🚀 Fetching term with ID:', id);
-  const res = await fetch('/api/term/' + id);
+  const res = await fetch(`${API_BASE}/api/term/${id}`);
   console.log('📡 Response status:', res.status);
   if (!res.ok) {
     console.error('❌ API Error:', res.status, res.statusText);
@@ -368,7 +370,7 @@ async function loadTermById(id) {
 // === entry point/initial call to db 
 // ultimately replace with findOne( random _id )
 
-fetch('/api/term/6890af9c82f836005c903e18')
+fetch(`${API_BASE}/api/term/6890af9c82f836005c903e18`)
   .then(res => {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
