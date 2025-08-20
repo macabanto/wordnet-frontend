@@ -26,3 +26,8 @@ dist-ssr
 #ENV
 .env.development
 .env.production
+
+// if cloudflare goes down : cloudflared tunnel --url http://127.0.0.1:3001
+// npm run build - rebuild dist
+// npm run deploy - send dist to github
+// node server.js - run node server

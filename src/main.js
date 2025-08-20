@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-console.log('✅ main.js loaded');
+//console.log('✅ main.js loaded');
 const width = window.innerWidth;
 const height = window.innerHeight;
 const API_BASE = import.meta.env.VITE_API_BASE;
@@ -14,16 +14,11 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio || 1);
 renderer.setSize(width, height);
 document.getElementById('container').appendChild(renderer.domElement);
 
-window.addEventListener('resize', () => {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-  camera.aspect = width / height;
-  camera.updateProjectionMatrix();
-  renderer.setSize(width, height);
-});
+
 
 const nodeObjects = []; 
 const nodeGroup = new THREE.Group();
@@ -35,10 +30,18 @@ const visited = new Set(); // optional: avoid refetching same term
 scene.add(nodeGroup);
 scene.add(linkGroup);
 
-function createTextSprite(text, color = '#bfbfbfff') {
-  const isCenter = text === "term";
-  const fontSize = isCenter ? 52 : 36;
-  const padding = 20;
+let rotation = { x: 0, y: 0 };
+let rotationVelocity = { x: 0, y: 0 };
+let isDragging = false;
+let previousMousePosition = { x: 0, y: 0 };
+const INERTIA_DECAY = 0.92;
+let clickCandidate = false;
+
+function createTextSprite(text) {
+  const color = '#bfbfbfff'
+  const isCenter = text === "term";// wtf is this.
+  const fontSize = 52;// text font-size
+  const padding = 5;// area around text
   const dpr = window.devicePixelRatio || 1;
 
   const canvas = document.createElement('canvas');
@@ -68,72 +71,13 @@ function createTextSprite(text, color = '#bfbfbfff') {
   return sprite;
 }
 
-function initializeGraph(termData) {
-  // optional: dispose old stuff to avoid leaks
-  nodeGroup.children.forEach(o => { o.material?.map?.dispose?.(); o.material?.dispose?.(); o.geometry?.dispose?.(); });
-  linkGroup.children.forEach(o => { o.material?.dispose?.(); o.geometry?.dispose?.(); });
-
-  nodeGroup.clear();
-  linkGroup.clear();
-  nodeObjects.length = 0;
-
-  // 🔍 Debug the initial term data
-  console.log('🔍 Initial termData:', termData);
-
-  // center term
-  const termSprite = createTextSprite(termData.term, '#909090ff');
-  termSprite.position.set(0, 0, 0);
-
-  // ✅ Use the same ID extraction helper
-  const getId = (obj) => obj._id?.$oid || obj._id || obj.id?.$oid || obj.id || null;
-  const centerTermId = getId(termData);
-  
-  console.log('🔍 Center term ID:', centerTermId);
-
-  termSprite.userData = {
-    id: centerTermId,
-    term: termData.term,
-    line: null
-  };
-
-  nodeGroup.add(termSprite);
-  nodeGroup.userData.center = termSprite;
-
-  // synonyms
-  termData.linked_synonyms.forEach((syn, index) => {
-    console.log(`🔍 Initial synonym ${index}:`, syn);
-    
-    const sprite = createTextSprite(syn.term);
-    sprite.position.set(syn.x, syn.y, syn.z);
-    
-    const synonymId = getId(syn);
-    console.log(`🔍 Initial synonym ${syn.term} ID:`, synonymId);
-    
-    sprite.userData = {
-      id: synonymId,
-      term: syn.term,
-      line: null
-    };
-    nodeGroup.add(sprite);
-    nodeObjects.push(sprite);
-
-    // line to center
-    const points = [termSprite.position.clone(), sprite.position.clone()];
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    const material = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 1 });
-    const line = new THREE.Line(geometry, material);
-    linkGroup.add(line);
-
-    sprite.userData.line = line; // 🔗 link sprite ⇄ line
-  });
-}
-
-let rotation = { x: 0, y: 0 };
-let rotationVelocity = { x: 0, y: 0 };
-let isDragging = false;
-let previousMousePosition = { x: 0, y: 0 };
-const INERTIA_DECAY = 0.92;
-let clickCandidate = false;
+window.addEventListener('resize', () => {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+});
 
 document.addEventListener('mousedown', event => {
   isDragging = true;
@@ -199,7 +143,6 @@ document.addEventListener('mousemove', event => {
   }
 });
 
-// 
 function expandFromNode(centerNode, termDoc) {
   // --- 1) Bake current group transform into all child positions ---
   nodeGroup.children.forEach(obj => {
@@ -369,6 +312,66 @@ async function loadTermById(id) {
 
 // === entry point/initial call to db 
 // ultimately replace with findOne( random _id )
+
+function initializeGraph(termData) {
+  // optional: dispose old stuff to avoid leaks
+  nodeGroup.children.forEach(o => { o.material?.map?.dispose?.(); o.material?.dispose?.(); o.geometry?.dispose?.(); });
+  linkGroup.children.forEach(o => { o.material?.dispose?.(); o.geometry?.dispose?.(); });
+
+  nodeGroup.clear();
+  linkGroup.clear();
+  nodeObjects.length = 0;
+
+  // 🔍 Debug the initial term data
+  console.log('🔍 Initial termData:', termData);
+
+  // center term
+  const termSprite = createTextSprite(termData.term);
+  termSprite.position.set(0, 0, 0);
+
+  // ✅ Use the same ID extraction helper
+  const getId = (obj) => obj._id?.$oid || obj._id || obj.id?.$oid || obj.id || null;
+  const centerTermId = getId(termData);
+  
+  console.log('🔍 Center term ID:', centerTermId);
+
+  termSprite.userData = {
+    id: centerTermId,
+    term: termData.term,
+    line: null
+  };
+
+  nodeGroup.add(termSprite);
+  nodeGroup.userData.center = termSprite;
+
+  // synonyms
+  termData.linked_synonyms.forEach((syn, index) => {
+    console.log(`🔍 Initial synonym ${index}:`, syn);
+    
+    const sprite = createTextSprite(syn.term);
+    sprite.position.set(syn.x, syn.y, syn.z);
+    
+    const synonymId = getId(syn);
+    console.log(`🔍 Initial synonym ${syn.term} ID:`, synonymId);
+    
+    sprite.userData = {
+      id: synonymId,
+      term: syn.term,
+      line: null
+    };
+    nodeGroup.add(sprite);
+    nodeObjects.push(sprite);
+
+    // line to center
+    const points = [termSprite.position.clone(), sprite.position.clone()];
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 1 });
+    const line = new THREE.Line(geometry, material);
+    linkGroup.add(line);
+
+    sprite.userData.line = line; // 🔗 link sprite ⇄ line
+  });
+}
 
 fetch(`${API_BASE}/api/term/6890af9c82f836005c903e18`)
   .then(res => {
