@@ -1,6 +1,4 @@
 README
-run api with : " node server.js "
-run vite with : " npm run dev -- --host 100.96.29.111 "
 
 pseudocode
 Core Data Structures
@@ -100,3 +98,10 @@ o	IF not dragging:
 o	UPDATE scene rotation
 o	RENDER scene
 
+Shell commands :
+assuming db is already populated...
+ * setup tunnel ( detached ) - "nohup cloudflared tunnel --config ~/.cloudflared/config.yml run synonym-api > tunnel.log 2>&1 &"
+ * build dist - "npm run build"
+ * deploy dist - "npm run deploy"
+ * run server ( detached ) - "nohup node server.js > server.log 2>&1 &"
+ * check server "ps aux | grep node"

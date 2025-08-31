@@ -1,14 +1,23 @@
 import * as THREE from 'three';
+import { CONFIG /*, createConfig */ } from './config.js';
+// modular config
 
 // --- constants / env ---
-const API_BASE = import.meta.env.VITE_API_BASE;
 const WIDTH = window.innerWidth;
 const HEIGHT = window.innerHeight;
 
 // --- scene setup ---
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(75, WIDTH / HEIGHT, 0.1, 1000);
-camera.position.z = 300;
+const camera = new THREE.PerspectiveCamera(
+  CONFIG.CAMERA_FOV,
+  WIDTH / HEIGHT,
+  CONFIG.CAMERA_NEAR,
+  CONFIG.CAMERA_FAR
+);
+camera.position.z = CONFIG.CAMERA_Z;
+// debug stuff
+const debugEl = document.getElementById('debug');
+let lastClicked = { x: null, y: null };
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -16,6 +25,8 @@ renderer.setSize(WIDTH, HEIGHT);
 document.getElementById('container').appendChild(renderer.domElement);
 
 const raycaster = new THREE.Raycaster();
+// Slightly more forgiving sprite hit-test for clicks
+raycaster.params.Sprite = { threshold: CONFIG.SPRITE_THRESHOLD };
 const mouse = new THREE.Vector2();
 
 // --- graph containers ---
@@ -30,25 +41,21 @@ let isTransitioning = false;
 let clickCandidate = false;
 
 // --- orbit/inertia state ---
-const ROT_SPEED = 0.005; // easy switches if you want to tweak later
-
-const INVERT_X = false;  // invert horizontal drag
-const INVERT_Y = false;  // invert vertical drag
 const ZERO = new THREE.Vector3(0, 0, 0);
 let isDragging = false;
 let rotation = { x: 0, y: 0 };
 let rotationVelocity = { x: 0, y: 0 };
 let prevMouse = { x: 0, y: 0 };
-let lastClient = { x: 0, y: 0 }; // chatgpt what ?
-const INERTIA_DECAY = 0.92;
+// Raw last client mouse position (CSS pixels), used to distinguish click vs drag
+let lastClient = { x: 0, y: 0 };
 
 // -------------- utils --------------
-const getId = (obj) => obj?._id?.$oid || obj?._id || obj?.id?.$oid || obj?.id || null;
+const getId = (obj) => obj?._id?.$oid || obj?._id || obj?.id?.$oid || obj?.id || null; // safest way to get id
 
 function createTextSprite(text) {
-  const color = '#bfbfbfff';
-  const fontSize = 48;
-  const padding = 6;
+  const color = CONFIG.SPRITE_COLOR;
+  const fontSize = CONFIG.SPRITE_FONT_SIZE;
+  const padding = CONFIG.SPRITE_PADDING;
   const dpr = window.devicePixelRatio || 1;
 
   const canvas = document.createElement('canvas');
@@ -66,7 +73,7 @@ function createTextSprite(text) {
   ctx.textBaseline = 'middle';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.shadowColor = 'black';
-  ctx.shadowBlur = 4;
+  ctx.shadowBlur = CONFIG.SPRITE_SHADOW_BLUR; // softer glow; can multiply by dpr for HiDPI sharpness
   ctx.fillStyle = color;
   ctx.fillText(text, (canvas.width / dpr) / 2, (canvas.height / dpr) / 2);
 
@@ -76,14 +83,14 @@ function createTextSprite(text) {
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(material);
 
-  const scale = 4; // uniform sizing
-  sprite.scale.set(canvas.width / dpr / scale, canvas.height / dpr / scale, 1);
+  const scaleDivisor = CONFIG.SPRITE_SCALE_DIVISOR;
+  sprite.scale.set(canvas.width / dpr / scaleDivisor, canvas.height / dpr / scaleDivisor, 1);
   return sprite;
 }
 
 // -------------- API --------------
 async function loadTermById(id) {
-  const res = await fetch(`${API_BASE}/api/term/${id}`);
+  const res = await fetch(`${CONFIG.API_BASE}/api/term/${id}`);
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   return res.json();
 } // ( _id ) => { return json }
@@ -116,7 +123,11 @@ function buildGraph(termDoc) {
       centerSprite.position.clone(),
       sprite.position.clone()
     ]);
-    const mat = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 1 });
+    const mat = new THREE.LineBasicMaterial({
+      color: CONFIG.LINE_COLOR,
+      transparent: true,
+      opacity: CONFIG.LINE_OPACITY_COLLAPSE_START
+    });
     const line = new THREE.Line(geom, mat);
     linkGroup.add(line);
     sprite.userData.line = line;
@@ -126,9 +137,9 @@ function buildGraph(termDoc) {
 // Clears out all sprites in nodeGroup
 function clearNodeGroup() {
   nodeGroup.children.forEach(sprite => {
-    if (sprite.material.map) sprite.material.map.dispose(); // canvas texture
-    sprite.material.dispose();
-    sprite.geometry.dispose();
+    sprite.material?.map && sprite.material.map.dispose();
+    sprite.material?.dispose?.();
+    sprite.geometry?.dispose?.();
   });
   nodeGroup.clear(); // removes all children from group
 }
@@ -136,14 +147,14 @@ function clearNodeGroup() {
 // Clears out all lines in linkGroup
 function clearLinkGroup() {
   linkGroup.children.forEach(line => {
-    line.material.dispose();
-    line.geometry.dispose();
+    line.material?.dispose?.();
+    line.geometry?.dispose?.();
   });
   linkGroup.clear();
 }
 
 // -------------- animations --------------
-// Reusable easing + RAF progress helper
+// Easing helper: accelerates, then decelerates smoothly (C2 continuous at t=0.5)
 const easeInOutQuad = (t) => (t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t);
 
 function rafProgress(duration, onUpdate) {
@@ -160,18 +171,18 @@ function rafProgress(duration, onUpdate) {
 }
 
 // Clean translateGraph using the helper
-async function translateGraph(targetNode, duration = 1000) {
+async function translateGraph(targetNode, duration = CONFIG.ANIM_TRANSLATE_MS) {
   const from = nodeGroup.position.clone();
-  const to   = from.clone().sub(targetNode.position.clone()); // bring clicked to origin
+  const to = from.clone().sub(targetNode.position); // bring clicked to origin
 
   await rafProgress(duration, (t) => {
     const e = easeInOutQuad(t);
-    nodeGroup.position.lerpVectors(from, to, e);  // no cloning each frame
+    nodeGroup.position.copy(from).lerp(to, e);
     linkGroup.position.copy(nodeGroup.position);  // keep edges in lockstep
   });
 }
 
-function collapseNodes(centerBeforeClick, keepNode, duration = 1000) {
+function collapseNodes(centerBeforeClick, keepNode, duration = CONFIG.ANIM_COLLAPSE_MS) {
   return new Promise(resolve => {
     // nodes to collapse = all clickable except the new center
     const collapseList = nodeObjects.filter(n => n !== keepNode);
@@ -182,19 +193,20 @@ function collapseNodes(centerBeforeClick, keepNode, duration = 1000) {
     const start = performance.now();
     function tick(tNow) {
       const t = Math.min((tNow - start) / duration, 1);
-      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+      const ease = easeInOutQuad(t);
 
       collapseList.forEach((node, i) => {
         // move + shrink
         node.position.copy(startPos[i]).lerp(target, ease);
-        node.scale.copy(startScale[i].clone().lerp(new THREE.Vector3(0, 0, 0), ease));
+        node.scale.copy(startScale[i].clone().lerp(ZERO, ease));
+
         // edge shrink/fade
         const line = node.userData?.line;
         if (line) {
           line.geometry.setFromPoints([centerBeforeClick.position, node.position]);
           line.geometry.attributes.position.needsUpdate = true;
           line.material.transparent = true;
-          line.material.opacity = 1 - ease;
+          line.material.opacity = (1 - ease);
         }
       });
 
@@ -205,11 +217,11 @@ function collapseNodes(centerBeforeClick, keepNode, duration = 1000) {
           const line = node.userData?.line;
           if (line) {
             linkGroup.remove(line);
-            line.geometry.dispose();
-            line.material.dispose();
+            line.geometry?.dispose?.();
+            line.material?.dispose?.();
           }
           nodeGroup.remove(node);
-          node.material?.map?.dispose?.();
+          node.material?.map && node.material.map.dispose();
           node.material?.dispose?.();
           node.geometry?.dispose?.();
           const idx = nodeObjects.indexOf(node);
@@ -222,6 +234,7 @@ function collapseNodes(centerBeforeClick, keepNode, duration = 1000) {
   });
 }
 
+// Bakes group offset down to children, then zeroes the groups
 function bakeGroupOffsetToChildren() {
   if (!nodeGroup.position.equals(ZERO)) {
     const off = nodeGroup.position.clone();
@@ -235,7 +248,7 @@ function bakeGroupOffsetToChildren() {
   }
 }
 
-function expandNodes(centerNode, termDoc, duration = 950) {
+function expandNodes(centerNode, termDoc, duration = CONFIG.ANIM_EXPAND_MS) {
   nodeObjects.length = 0;
 
   const list = Array.isArray(termDoc.linked_synonyms) ? termDoc.linked_synonyms : [];
@@ -253,25 +266,29 @@ function expandNodes(centerNode, termDoc, duration = 950) {
       centerNode.position.clone(),
       centerNode.position.clone()
     ]);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.0 });
+    const lineMat = new THREE.LineBasicMaterial({
+      color: CONFIG.LINE_COLOR,
+      transparent: true,
+      opacity: 0.0
+    });
     const line = new THREE.Line(lineGeom, lineMat);
     linkGroup.add(line);
     sprite.userData.line = line;
 
     const target = new THREE.Vector3(syn.x, syn.y, syn.z);
     const start = performance.now();
-    const myDuration = duration + Math.random() * 200;
+    const myDuration = duration + Math.random() * CONFIG.ANIM_EXPAND_JITTER_MS;
 
     function tick(now) {
       const t = Math.min((now - start) / myDuration, 1);
-      const ease = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
+      const ease = easeInOutQuad(t);
 
       sprite.position.copy(centerNode.position.clone().lerp(target, ease));
       sprite.scale.copy(finalScale.clone().multiplyScalar(ease));
 
       line.geometry.setFromPoints([centerNode.position, sprite.position]);
       line.geometry.attributes.position.needsUpdate = true;
-      line.material.opacity = 0.75 * ease;
+      line.material.opacity = CONFIG.LINE_OPACITY_EXPAND_TARGET * ease;
 
       if (t < 1) requestAnimationFrame(tick);
     }
@@ -279,7 +296,7 @@ function expandNodes(centerNode, termDoc, duration = 950) {
   });
 }
 
-function wasClick(thresholdPx = 5) {
+function wasClick(thresholdPx = CONFIG.CLICK_THRESHOLD_PX) {
   const movedFar =
     Math.abs(prevMouse.x - lastClient.x) > thresholdPx ||
     Math.abs(prevMouse.y - lastClient.y) > thresholdPx;
@@ -291,8 +308,8 @@ async function transitionToNode(clicked) {
   const oldCenter = nodeGroup.userData.center;
 
   await Promise.all([
-    translateGraph(clicked, 1000),
-    collapseNodes(oldCenter, clicked, 1000),
+    translateGraph(clicked, CONFIG.ANIM_TRANSLATE_MS),
+    collapseNodes(oldCenter, clicked, CONFIG.ANIM_COLLAPSE_MS),
   ]);
 
   bakeGroupOffsetToChildren();
@@ -306,7 +323,7 @@ async function transitionToNode(clicked) {
   try {
     const doc = await loadTermById(id);
     if (!doc || !doc.term) return; // guard bad payloads
-    expandNodes(clicked, doc, 950);
+    expandNodes(clicked, doc, CONFIG.ANIM_EXPAND_MS);
   } catch (e) {
     console.error('fetch/expand failed:', e);
   }
@@ -314,18 +331,15 @@ async function transitionToNode(clicked) {
 
 // -------------- pointer/orbit handlers --------------
 function rotateCamera(dx, dy) {
-  const sx = INVERT_X ? -1 : 1;
-  const sy = INVERT_Y ? -1 : 1;
-  const yaw   = sx * dx * ROT_SPEED;  // around Y
-  const pitch = sy * dy * ROT_SPEED;  // around X
+  const sx = CONFIG.INVERT_X ? -1 : 1;
+  const sy = CONFIG.INVERT_Y ? -1 : 1;
+  const yaw   = sx * dx * CONFIG.ROT_SPEED;  // around Y
+  const pitch = sy * dy * CONFIG.ROT_SPEED;  // around X
   rotation.y += yaw;
   rotation.x += pitch;
   rotationVelocity.y = yaw;
   rotationVelocity.x = pitch;
-  // Optional: prevent flipping over the top
-  const LIMIT = Math.PI / 2 - 0.01;
-  if (rotation.x >  LIMIT) rotation.x =  LIMIT;
-  if (rotation.x < -LIMIT) rotation.x = -LIMIT;
+  // redacted
 }
 
 document.addEventListener('mousemove', (e) => {
@@ -333,7 +347,11 @@ document.addEventListener('mousemove', (e) => {
   mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
   lastClient = { x: e.clientX, y: e.clientY };
 
-  if (!isDragging) return;
+  if (!isDragging) {
+    prevMouse = { x: e.clientX, y: e.clientY };
+    return;
+  }
+
   const dx = e.clientX - prevMouse.x;
   const dy = e.clientY - prevMouse.y;
   rotateCamera(dx, dy);
@@ -341,8 +359,10 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mousedown', (e) => {
-  isDragging = true; // could be a drag ?
-  clickCandidate = true; // could be a click ?
+  isDragging = true;              // could be a drag ?
+  clickCandidate = true;          // could be a click ?
+  // debug stuff
+  lastClicked = { x: e.clientX, y: e.clientY };
   prevMouse = { x: e.clientX, y: e.clientY }; // retain mouse position at click
   lastClient = { x: e.clientX, y: e.clientY };
   rotationVelocity = { x: 0, y: 0 }; // stops inertia
@@ -350,8 +370,12 @@ document.addEventListener('mousedown', (e) => {
 
 document.addEventListener('mouseup', async () => {
   isDragging = false;
-  if (!wasClick()) return;
+
+  // compute once, then always reset clickCandidate
+  const isClick = wasClick();
   clickCandidate = false;
+
+  if (!isClick) return;
 
   // raycast
   raycaster.setFromCamera(mouse, camera);
@@ -387,22 +411,23 @@ function animate() {
   if (!isDragging) {
     rotation.x += rotationVelocity.x;
     rotation.y += rotationVelocity.y;
-    rotationVelocity.x *= INERTIA_DECAY;
-    rotationVelocity.y *= INERTIA_DECAY;
-    if (Math.abs(rotationVelocity.x) < 0.0001) rotationVelocity.x = 0;
-    if (Math.abs(rotationVelocity.y) < 0.0001) rotationVelocity.y = 0;
+    rotationVelocity.x *= CONFIG.INERTIA_DECAY;
+    rotationVelocity.y *= CONFIG.INERTIA_DECAY;
+    if (Math.abs(rotationVelocity.x) < CONFIG.VELOCITY_EPS) rotationVelocity.x = 0;
+    if (Math.abs(rotationVelocity.y) < CONFIG.VELOCITY_EPS) rotationVelocity.y = 0;
   }
 
   scene.rotation.x = rotation.x;
   scene.rotation.y = rotation.y;
-
+  // debug stuff
+  debugEl.textContent = `Mouse:\t\t${lastClient.x}, ${lastClient.y} Last Click:\t${lastClicked.x ?? '-'}, ${lastClicked.y ?? '-'} Rotation:\tX ${rotation.x.toFixed(3)}\tY ${rotation.y.toFixed(3)}Velocity:\tX ${rotationVelocity.x.toFixed(4)}\tY ${rotationVelocity.y.toFixed(4)}`;
   renderer.render(scene, camera);
 }
 
 // -------------- entry --------------
 async function initialiseScene() {
   try {
-    const seed = await loadTermById('6890af9c82f836005c903e18');
+    const seed = await loadTermById(CONFIG.INITIAL_TERM_ID);
     buildGraph(seed);
   } catch (e) {
     console.error('initial load failed:', e);

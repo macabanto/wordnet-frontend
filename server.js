@@ -35,6 +35,11 @@ async function start() {
   }
 }
 //testing
+
+app.get("/", (req, res) => {
+  res.send("✅ Tunnel is working!");
+});
+
 app.get('/ping', (req, res) => res.send('pong'));
 
 app.get('/api/term/:id', async (req, res) => {
