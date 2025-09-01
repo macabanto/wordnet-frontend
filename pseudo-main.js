@@ -29,11 +29,11 @@ const mouse = new THREE.Vector2();
 
 // --- graph containers ---
 const nodeGroup = new THREE.Group();   // all text sprites
-// const linkGroup = new THREE.Group(); // edges disabled
+// const linkGroup = new THREE.Group();   // edges disabled
 scene.add(nodeGroup /*, linkGroup*/);
 
 // --- interaction state ---
-const nodeObjects = [];   // current clickable ring
+const nodeObjects = [];
 let centeredNode = null;
 let isTransitioning = false;
 let clickCandidate = false;
@@ -47,6 +47,7 @@ let prevMouse = { x: 0, y: 0 };
 let lastClient = { x: 0, y: 0 };
 
 // -------------- utils --------------
+// helper function to return _id of node
 const getId = (obj) =>
   obj?._id?.$oid || obj?._id || obj?.id?.$oid || obj?.id || null;
 
@@ -86,6 +87,7 @@ function createTextSprite(text) {
 }
 
 // --- API ---
+// fetch api, return lemma as json
 async function loadTermById(id) {
   const res = await fetch(`${CONFIG.API_BASE}/api/term/${id}`);
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
@@ -93,9 +95,10 @@ async function loadTermById(id) {
 }
 
 // --- state helpers ---
-const byId = new Map();
-function nodeById(id) { return byId.get(id); }
+const byId = new Map();//explain this; what it is; what its used for;
+function nodeById(id) { return byId.get(id); }//this needs a good explanation
 
+// filter loop; return array of like nodes
 function currentSynIdsFromScene() {
   return nodeObjects
     .filter(o => o.userData?.isSynonym)
@@ -113,17 +116,13 @@ function buildTargetMapFromDoc(termDoc) {
 function intersect(arrA, arrB) { const s = new Set(arrB); return arrA.filter(x => s.has(x)); }
 function subtract(arrA, arrB) { const s = new Set(arrB); return arrA.filter(x => !s.has(x)); }
 
-// Instant recenter (group shift + bake)
 function recenterInstant(targetObj) {
   const delta = targetObj.position.clone().negate();
   nodeGroup.position.add(delta);
-  // apply 3d translation to camera as well no?
-  // camera.position.add(delta);
   // linkGroup.position.add(delta);
   bakeGroupOffsetToChildren();
 }
 
-// Bake offsets to children and zero groups
 function bakeGroupOffsetToChildren() {
   if (!nodeGroup.position.equals(ZERO)) {
     const off = nodeGroup.position.clone();
@@ -137,80 +136,10 @@ function bakeGroupOffsetToChildren() {
   } */
 }
 
-// === Centralized registry for sprites (#1 & #6)
-function registerNode(obj) {
-  const id = obj?.userData?.id;
-  if (!id) return;
-  byId.set(id, obj);
-  if (obj.userData?.isSynonym) {
-    if (!nodeObjects.includes(obj)) nodeObjects.push(obj);
-  }
-}
-function removeNode(obj) {
-  const id = obj?.userData?.id;
-  if (obj?.parent === nodeGroup) nodeGroup.remove(obj);
-  if (obj?.material?.map) obj.material.map.dispose?.();
-  obj?.material?.dispose?.();
-  obj?.geometry?.dispose?.();
-  if (id) byId.delete(id);
-  const idx = nodeObjects.indexOf(obj);
-  if (idx !== -1) nodeObjects.splice(idx, 1);
-}
-
-// === Cancelable delay + TransitionManager (#4)
-const PendingTimers = new Set();
-function delay(ms, token) {
-  return new Promise((resolve) => {
-    const t = setTimeout(() => {
-      PendingTimers.delete(t);
-      resolve();
-    }, ms);
-    PendingTimers.add(t);
-    if (token) token.cancelCallbacks.push(() => {
-      clearTimeout(t);
-      PendingTimers.delete(t);
-    });
-  });
-}
-function clearAllDelays() {
-  for (const t of PendingTimers) clearTimeout(t);
-  PendingTimers.clear();
-}
-
-const TransitionManager = (() => {
-  const active = new Set();
-  let currentToken = null;
-
-  function newToken() { return { cancelled: false, cancelCallbacks: [] }; }
-
-  function cancelAll() {
-    clearAllDelays();
-    if (currentToken) {
-      currentToken.cancelled = true;
-      for (const cb of currentToken.cancelCallbacks) cb();
-    }
-    active.clear();
-  }
-
-  function track(p) {
-    active.add(p);
-    p.finally(() => active.delete(p));
-  }
-
-  async function waitAll() { await Promise.all(Array.from(active)); }
-
-  return {
-    begin() { cancelAll(); currentToken = newToken(); return currentToken; },
-    cancelAll,
-    track,
-    waitAll,
-    get token() { return currentToken; },
-  };
-})();
-
 // --- build ---
 function buildGraph(termDoc) {
   clearNodeGroup();
+  // clearLinkGroup();
   nodeObjects.length = 0;
   byId.clear();
 
@@ -219,9 +148,9 @@ function buildGraph(termDoc) {
   centerSprite.position.set(0, 0, 0);
   centerSprite.userData = { id: centerId, term: termDoc.term, isCenter: true };
   nodeGroup.add(centerSprite);
-  registerNode(centerSprite);
   nodeGroup.userData.center = centerSprite;
   centeredNode = centerSprite;
+  byId.set(centerId, centerSprite);
 
   const list = Array.isArray(termDoc.linked_synonyms) ? termDoc.linked_synonyms : [];
   list.forEach(syn => {
@@ -230,66 +159,58 @@ function buildGraph(termDoc) {
     sprite.position.set(syn.x, syn.y, syn.z);
     sprite.userData = { id: sid, term: syn.term, isSynonym: true };
     nodeGroup.add(sprite);
-    registerNode(sprite);
+    nodeObjects.push(sprite);
+    byId.set(sid, sprite);
+
+    // edges disabled
+    // const geom = new THREE.BufferGeometry().setFromPoints([centerSprite.position.clone(), sprite.position.clone()]);
+    // const mat = new THREE.LineBasicMaterial({ color: CONFIG.LINE_COLOR });
+    // const line = new THREE.Line(geom, mat);
+    // linkGroup.add(line);
+    // sprite.userData.line = line;
   });
 }
 
 function clearNodeGroup() {
-  const children = [...nodeGroup.children];
-  for (const sprite of children) removeNode(sprite);
+  nodeGroup.children.forEach(sprite => {
+    sprite.material?.map && sprite.material.map.dispose();
+    sprite.material?.dispose?.();
+    sprite.geometry?.dispose?.();
+  });
+  nodeGroup.clear();
 }
+/* function clearLinkGroup() {
+  linkGroup.children.forEach(line => {
+    line.material?.dispose?.();
+    line.geometry?.dispose?.();
+  });
+  linkGroup.clear();
+} */
 
 // --- animations ---
 const easeInOutQuad = (t) => (t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t);
 
-function rafProgress(duration, onUpdate, token) {
+function rafProgress(duration, onUpdate) {
   return new Promise((resolve) => {
-    let rafId = null;
     const start = performance.now();
-
-    function cancel() {
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      resolve(); // resolve harmlessly on cancel
-    }
-    if (token) token.cancelCallbacks.push(cancel);
-
     function frame(now) {
-      if (token?.cancelled) return cancel();
       const t = Math.min((now - start) / duration, 1);
       onUpdate(t);
-      if (t < 1) rafId = requestAnimationFrame(frame);
+      if (t < 1) requestAnimationFrame(frame);
       else resolve();
     }
-    rafId = requestAnimationFrame(frame);
+    requestAnimationFrame(frame);
   });
 }
 
-function tweenPosition(obj, toVec3, { duration, ease = easeInOutQuad, onUpdate, onComplete, token } = {}) {
+function tweenPosition(obj, toVec3, { duration, ease = easeInOutQuad, onUpdate, onComplete } = {}) {
   const from = obj.position.clone();
   const to = toVec3.clone();
-  const p = rafProgress(duration, (t) => {
-    if (token?.cancelled) return;
+  return rafProgress(duration, (t) => {
     const e = ease(t);
     obj.position.copy(from).lerp(to, e);
     onUpdate && onUpdate(obj);
     if (t === 1 && onComplete) onComplete();
-  }, token);
-  TransitionManager.track(p);
-  return p;
-}
-
-// Smoothly translate the whole graph so `targetObj` moves to the origin.
-function recenterAnimate(targetObj, duration = CONFIG.ANIM_TRANSLATE_MS || 500, token) {
-  const from = nodeGroup.position.clone();
-  const to   = from.clone().sub(targetObj.position); // move clicked → origin
-  return rafProgress(duration, (t) => {
-    if (token?.cancelled) return;
-    const e = easeInOutQuad(t);
-    nodeGroup.position.copy(from).lerp(to, e);
-    // if/when you re-enable edges, also lerp linkGroup.position here
-  }, token).then(() => {
-    // Commit offsets to children so groups reset to (0,0,0)
-    bakeGroupOffsetToChildren();
   });
 }
 
@@ -299,15 +220,13 @@ function followMovingAnchor(obj, anchorObj, {
   fade = true,
   scaleTo = 0.6,
   onUpdate,
-  onComplete,
-  token
+  onComplete
 } = {}) {
   const from = obj.position.clone();
   const scaleFrom = obj.scale.x;
   const startOpacity = obj.material?.opacity ?? 1;
 
-  const p = rafProgress(duration, (t) => {
-    if (token?.cancelled) return;
+  return rafProgress(duration, (t) => {
     const e = ease(t);
     const anchorPos = anchorObj.position;
     const cur = new THREE.Vector3().lerpVectors(from, anchorPos, e);
@@ -322,159 +241,115 @@ function followMovingAnchor(obj, anchorObj, {
 
     onUpdate && onUpdate(obj);
     if (t === 1 && onComplete) onComplete();
-  }, token);
-  TransitionManager.track(p);
-  return p;
+  });
 }
 
-// --- transition (no edges) ---
+// --- transition (edges commented out) ---
 async function transitionToNode(clicked, mode = 'parallel') {
+  const oldCenter = nodeGroup.userData.center;
+  const prevCenterId = oldCenter?.userData?.id;
   const newCenterId = clicked.userData?.id;
   if (!newCenterId) return;
 
-  // Start new transition & cancel previous
-  const token = TransitionManager.begin();
-
-  // Fetch new doc
   let doc;
   try {
     doc = await loadTermById(newCenterId);
-    if (token.cancelled) return;
     if (!doc || !doc.term) return;
   } catch (e) {
-    if (!token.cancelled) console.error('fetch failed:', e);
+    console.error('fetch failed:', e);
     return;
   }
 
-  const oldCenter = nodeGroup.userData.center;
-  const prevCenterId = oldCenter?.userData?.id;
+  recenterInstant(clicked);
+  nodeGroup.userData.center = clicked;
+  centeredNode = clicked;
 
-  // (#2) Build sets BEFORE recenter
-  const A0 = currentSynIdsFromScene();                                // current ring (synonyms)
-  const A  = A0.filter(id => id !== newCenterId);                     // exclude the clicked (now center)
-  const B  = (doc.linked_synonyms || []).map(s => getId(s)).filter(Boolean); // new ring
-  // Treat the previous center as "already present" to avoid spawning a duplicate
-  const Aplus = prevCenterId ? [...new Set([...A, prevCenterId])] : A;
+  const A = currentSynIdsFromScene();
+  const B = doc.linked_synonyms.map(s => getId(s));
+  const shared = intersect(A, B);
+  const former = subtract(A, B);
+  const fresh  = subtract(B, A);
 
-  const shared = intersect(Aplus, B);   // includes prevCenterId if it’s in B
-  const former = subtract(A, B);        // former stays based on A (not Aplus)
-  const current  = subtract(B, Aplus);    // excludes prevCenterId if present
+  const targetPos = buildTargetMapFromDoc(doc);
 
-  // Targets (relative to new center-at-origin layout)
-const targetPos = buildTargetMapFromDoc(doc);
-
-// Smooth recenter so the clicked sprite *animates* to the center
-await recenterAnimate(clicked, CONFIG.ANIM_TRANSLATE_MS || 500, token);
-if (token.cancelled) return;
-
-// Now the clicked is visually at the origin — tag it as the true center
-nodeGroup.userData.center = clicked;
-centeredNode = clicked;
-clicked.userData.isCenter = true;
-clicked.userData.isSynonym = false;
-const idx = nodeObjects.indexOf(clicked);
-if (idx !== -1) nodeObjects.splice(idx, 1);
-
-  // Timing
   const D = CONFIG.ANIM_EXPAND_MS ?? 900;
   const schedule = (mode === 'serial')
-    ? { shared: { delay: 0,       dur: 0.5*D },
-        former: { delay: 0.5*D,   dur: 0.3*D },
-        fresh:  { delay: 0.8*D,   dur: 0.8*D } }
-    : { shared: { delay: 0,       dur: 1.0*D },
-        former: { delay: 0,       dur: 0.6*D },
-        fresh:  { delay: 0.15*D,  dur: 0.85*D } };
+    ? { shared: { delay: 0, dur: 0.5*D }, former: { delay: 0.5*D, dur: 0.3*D }, fresh: { delay: 0.8*D, dur: 0.8*D } }
+    : { shared: { delay: 0, dur: 1.0*D }, former: { delay: 0, dur: 0.6*D }, fresh: { delay: 0.15*D, dur: 0.85*D } };
 
-  // Helper
-  const guard = (p) => { TransitionManager.track(p); return p; };
-
-// Prev center motion (parallel; no await sequencing)
-const prevIsInNew = prevCenterId && B.includes(prevCenterId);
-let prevTask = Promise.resolve();
-if (oldCenter && oldCenter !== clicked) {
-  if (prevIsInNew) {
-    // 🔧 Retag the old center so it behaves like a normal synonym in the new ring
-    oldCenter.userData.isCenter = false;
-    oldCenter.userData.isSynonym = true;
-    if (!nodeObjects.includes(oldCenter)) nodeObjects.push(oldCenter);
-
-    prevTask = guard(
-      tweenPosition(oldCenter, targetPos[prevCenterId], {
-        duration: schedule.shared.dur,
-        token
-      })
-    );
-  } else {
-    prevTask = guard(
-      followMovingAnchor(oldCenter, clicked, {
+  const prevIsInNew = prevCenterId && B.includes(prevCenterId);
+  if (oldCenter && oldCenter !== clicked) {
+    if (prevIsInNew) {
+      await tweenPosition(oldCenter, targetPos[prevCenterId], { duration: schedule.shared.dur });
+    } else {
+      await followMovingAnchor(oldCenter, clicked, {
         duration: schedule.former.dur,
         fade: true,
-        token,
-        onComplete: () => { if (!token.cancelled) removeNode(oldCenter); }
-      })
-    );
+        onComplete: () => {
+          nodeGroup.remove(oldCenter);
+          byId.delete(prevCenterId);
+        }
+      });
+    }
   }
-}
-  // SHARED glides
-  const sharedTasks = shared.map((id) => {
-    const obj = nodeById(id); if (!obj) return Promise.resolve();
-    return delay(schedule.shared.delay, token).then(() =>
-      guard(tweenPosition(obj, targetPos[id], { duration: schedule.shared.dur, token }))
-    );
-  });
 
-  // FORMER collapses
-  const formerTasks = former.map((id) => {
-    const obj = nodeById(id); if (!obj || !oldCenter) return Promise.resolve();
-    return delay(schedule.former.delay, token).then(() =>
-      guard(followMovingAnchor(obj, oldCenter, {
+  for (const id of shared) {
+    const obj = nodeById(id);
+    if (!obj) continue;
+    setTimeout(() => {
+      tweenPosition(obj, targetPos[id], { duration: schedule.shared.dur });
+    }, schedule.shared.delay);
+  }
+
+  for (const id of former) {
+    const obj = nodeById(id);
+    if (!obj || !oldCenter) continue;
+    setTimeout(() => {
+      followMovingAnchor(obj, oldCenter, {
         duration: schedule.former.dur,
         fade: true,
-        token,
-        onComplete: () => { if (!token.cancelled) removeNode(obj); }
-      }))
-    );
-  });
+        onComplete: () => {
+          nodeGroup.remove(obj);
+          byId.delete(id);
+          const idx = nodeObjects.indexOf(obj);
+          if (idx !== -1) nodeObjects.splice(idx, 1);
+        }
+      });
+    }, schedule.former.delay);
+  }
 
-  // FRESH spawns
-  const freshSet = new Set(current);
-  const freshTasks = (doc.linked_synonyms || []).map((s) => {
+  const freshSet = new Set(fresh);
+  for (const s of (doc.linked_synonyms || [])) {
     const sid = getId(s);
-    if (!sid || !freshSet.has(sid)) return Promise.resolve();
+    if (!freshSet.has(sid)) continue;
 
     const sprite = createTextSprite(s.term);
     sprite.userData = { id: sid, term: s.term, isSynonym: true };
     nodeGroup.add(sprite);
-    registerNode(sprite);
+    nodeObjects.push(sprite);
+    byId.set(sid, sprite);
 
     const tgt = targetPos[sid];
     const dir = tgt.clone().sub(clicked.position);
-    const spawn = dir.lengthSq() === 0
-      ? clicked.position.clone()
-      : clicked.position.clone().add(dir.multiplyScalar(0.15));
+    const spawn = dir.lengthSq() === 0 ? clicked.position.clone() : clicked.position.clone().add(dir.multiplyScalar(0.15));
     sprite.position.copy(spawn);
     if (sprite.material) { sprite.material.transparent = true; sprite.material.opacity = 0; }
 
-    return delay(schedule.fresh.delay, token).then(() =>
-      guard(tweenPosition(sprite, tgt, {
-        duration: schedule.fresh.dur,
-        token,
+    setTimeout(() => {
+      const startOpacity = sprite.material?.opacity ?? 0;
+      const dur = schedule.fresh.dur;
+      tweenPosition(sprite, tgt, {
+        duration: dur,
         onUpdate: (o) => {
           const total = spawn.distanceTo(tgt);
-          if (total === 0) { if (o.material) o.material.opacity = 1; return; }
           const left = o.position.distanceTo(tgt);
-          const pTravel = Math.min(1, (total - left) / (0.5 * total));
-          if (o.material) o.material.opacity = Math.min(1, pTravel);
+          const pTravel = Math.min(1, (total - left) / (0.5 * total || 1));
+          if (o.material) o.material.opacity = Math.min(1, startOpacity + pTravel);
         }
-      }))
-    );
-  });
+      });
+    }, schedule.fresh.delay);
+  }
 
-  // Parallel wait for all cohorts
-  await Promise.all([prevTask, ...sharedTasks, ...formerTasks, ...freshTasks]);
-  if (token.cancelled) return;
-
-  // Finalize clickable ring to exactly B
   for (let i = nodeObjects.length - 1; i >= 0; i--) {
     const id = nodeObjects[i].userData?.id;
     if (!id) continue;
@@ -524,23 +399,14 @@ document.addEventListener('mouseup', async () => {
   const isClick = wasClick();
   clickCandidate = false;
   if (!isClick) return;
-
   raycaster.setFromCamera(mouse, camera);
   const hits = raycaster.intersectObjects(nodeObjects, false);
   if (hits.length === 0) return;
-
   const clicked = hits[0].object;
   if (clicked === centeredNode) return;
-  if (!clicked.userData?.id) return; // (#7) safety
-
-  // cancel any running transition before starting a new one (#4)
-  TransitionManager.cancelAll();
-
   isTransitioning = true;
   try {
     await transitionToNode(clicked, CONFIG.TRANSITION_MODE || 'parallel');
-  } catch (err) {
-    console.error('transition error:', err);
   } finally {
     isTransitioning = false;
   }
@@ -569,7 +435,7 @@ function animate() {
   scene.rotation.x = rotation.x;
   scene.rotation.y = rotation.y;
   debugEl.textContent =
-    `Mouse:\t${lastClient.x}, ${lastClient.y}  Last:\t${lastClicked.x}, ${lastClicked.y}`;
+    `Mouse:\t${lastClient.x}, ${lastClient.y} Last:\t${lastClicked.x}, ${lastClicked.y}`;
   renderer.render(scene, camera);
 }
 

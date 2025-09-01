@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017'; // use 127.0.0.1 to avoid odd IPv6 issues
 const DB_NAME = process.env.DB_NAME || 'lemmas';
-const COLLECTION = process.env.COLLECTION || 'lemmas-linked';
+const COLLECTION = process.env.COLLECTION || 'lemmas-linked-second-degree';
 
 app.use(cors({
   origin: ['https://macabanto.github.io'],
