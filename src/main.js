@@ -117,8 +117,6 @@ function subtract(arrA, arrB) { const s = new Set(arrB); return arrA.filter(x =>
 function recenterInstant(targetObj) {
   const delta = targetObj.position.clone().negate();
   nodeGroup.position.add(delta);
-  // apply 3d translation to camera as well no?
-  // camera.position.add(delta);
   // linkGroup.position.add(delta);
   bakeGroupOffsetToChildren();
 }
@@ -137,7 +135,7 @@ function bakeGroupOffsetToChildren() {
   } */
 }
 
-// === Centralized registry for sprites (#1 & #6)
+// === Centralized registry for sprites
 function registerNode(obj) {
   const id = obj?.userData?.id;
   if (!id) return;
@@ -157,7 +155,7 @@ function removeNode(obj) {
   if (idx !== -1) nodeObjects.splice(idx, 1);
 }
 
-// === Cancelable delay + TransitionManager (#4)
+// === Cancelable delay + TransitionManager
 const PendingTimers = new Set();
 function delay(ms, token) {
   return new Promise((resolve) => {
@@ -207,6 +205,14 @@ const TransitionManager = (() => {
     get token() { return currentToken; },
   };
 })();
+
+// --- new: frozen-anchor helper ---
+function makeAnchorAt(obj3d) {
+  const anchor = new THREE.Object3D();
+  anchor.position.copy(obj3d.position);
+  scene.add(anchor);
+  return anchor;
+}
 
 // --- build ---
 function buildGraph(termDoc) {
@@ -328,7 +334,8 @@ function followMovingAnchor(obj, anchorObj, {
 }
 
 // --- transition (no edges) ---
-async function transitionToNode(clicked, mode = 'parallel') {
+// Former synonyms collapse into a *frozen anchor* so the scene doesn't feel like it slides.
+async function transitionToNode(clicked, mode = 'serial') {
   const newCenterId = clicked.userData?.id;
   if (!newCenterId) return;
 
@@ -349,72 +356,75 @@ async function transitionToNode(clicked, mode = 'parallel') {
   const oldCenter = nodeGroup.userData.center;
   const prevCenterId = oldCenter?.userData?.id;
 
-  // (#2) Build sets BEFORE recenter
+  // Build sets BEFORE recenter
   const A0 = currentSynIdsFromScene();                                // current ring (synonyms)
   const A  = A0.filter(id => id !== newCenterId);                     // exclude the clicked (now center)
   const B  = (doc.linked_synonyms || []).map(s => getId(s)).filter(Boolean); // new ring
-  // Treat the previous center as "already present" to avoid spawning a duplicate
   const Aplus = prevCenterId ? [...new Set([...A, prevCenterId])] : A;
 
-  const shared = intersect(Aplus, B);   // includes prevCenterId if it’s in B
-  const former = subtract(A, B);        // former stays based on A (not Aplus)
-  const current  = subtract(B, Aplus);    // excludes prevCenterId if present
+  const shared  = intersect(Aplus, B);
+  const former  = subtract(A, B);
+  const current = subtract(B, Aplus);
 
   // Targets (relative to new center-at-origin layout)
-const targetPos = buildTargetMapFromDoc(doc);
+  const targetPos = buildTargetMapFromDoc(doc);
 
-// Smooth recenter so the clicked sprite *animates* to the center
-await recenterAnimate(clicked, CONFIG.ANIM_TRANSLATE_MS || 500, token);
-if (token.cancelled) return;
+  // Smooth recenter so the clicked sprite *animates* to the center
+  await recenterAnimate(clicked, CONFIG.ANIM_TRANSLATE_MS || 500, token);
+  if (token.cancelled) return;
 
-// Now the clicked is visually at the origin — tag it as the true center
-nodeGroup.userData.center = clicked;
-centeredNode = clicked;
-clicked.userData.isCenter = true;
-clicked.userData.isSynonym = false;
-const idx = nodeObjects.indexOf(clicked);
-if (idx !== -1) nodeObjects.splice(idx, 1);
+  // Now the clicked is visually at the origin — tag it as the true center
+  nodeGroup.userData.center = clicked;
+  centeredNode = clicked;
+  clicked.userData.isCenter = true;
+  clicked.userData.isSynonym = false;
+  {
+    const idx = nodeObjects.indexOf(clicked);
+    if (idx !== -1) nodeObjects.splice(idx, 1);
+  }
+
+  // Create a frozen anchor at the old center's *post-recenter* position
+  let formerAnchor = null;
+  if (oldCenter && oldCenter !== clicked) {
+    formerAnchor = makeAnchorAt(oldCenter);
+  }
 
   // Timing
   const D = CONFIG.ANIM_EXPAND_MS ?? 900;
   const schedule = (mode === 'serial')
     ? { shared: { delay: 0,       dur: 0.5*D },
         former: { delay: 0.5*D,   dur: 0.3*D },
-        fresh:  { delay: 0.8*D,   dur: 0.8*D } }
+        fresh:  { delay: 0.8*D,   dur: 0.8*D },
+        gate: true }
     : { shared: { delay: 0,       dur: 1.0*D },
         former: { delay: 0,       dur: 0.6*D },
-        fresh:  { delay: 0.15*D,  dur: 0.85*D } };
+        fresh:  { delay: 0.15*D,  dur: 0.85*D },
+        gate: false };
 
-  // Helper
   const guard = (p) => { TransitionManager.track(p); return p; };
 
-// Prev center motion (parallel; no await sequencing)
-const prevIsInNew = prevCenterId && B.includes(prevCenterId);
-let prevTask = Promise.resolve();
-if (oldCenter && oldCenter !== clicked) {
-  if (prevIsInNew) {
-    // 🔧 Retag the old center so it behaves like a normal synonym in the new ring
-    oldCenter.userData.isCenter = false;
-    oldCenter.userData.isSynonym = true;
-    if (!nodeObjects.includes(oldCenter)) nodeObjects.push(oldCenter);
+  // Prev center handling (don't move it yet if it won't be in the new ring)
+  const prevIsInNew = prevCenterId && B.includes(prevCenterId);
+  let prevTask = Promise.resolve();
+  if (oldCenter && oldCenter !== clicked) {
+    if (prevIsInNew) {
+      // becomes a synonym in the new ring
+      oldCenter.userData.isCenter = false;
+      oldCenter.userData.isSynonym = true;
+      if (!nodeObjects.includes(oldCenter)) nodeObjects.push(oldCenter);
 
-    prevTask = guard(
-      tweenPosition(oldCenter, targetPos[prevCenterId], {
-        duration: schedule.shared.dur,
-        token
-      })
-    );
-  } else {
-    prevTask = guard(
-      followMovingAnchor(oldCenter, clicked, {
-        duration: schedule.former.dur,
-        fade: true,
-        token,
-        onComplete: () => { if (!token.cancelled) removeNode(oldCenter); }
-      })
-    );
+      prevTask = guard(
+        tweenPosition(oldCenter, targetPos[prevCenterId], {
+          duration: schedule.shared.dur,
+          token
+        })
+      );
+    } else {
+      // Defer moving/removing the old center until after formers collapse
+      prevTask = Promise.resolve();
+    }
   }
-}
+
   // SHARED glides
   const sharedTasks = shared.map((id) => {
     const obj = nodeById(id); if (!obj) return Promise.resolve();
@@ -423,11 +433,11 @@ if (oldCenter && oldCenter !== clicked) {
     );
   });
 
-  // FORMER collapses
+  // FORMER collapses → collapse to the frozen anchor (fixed point)
   const formerTasks = former.map((id) => {
-    const obj = nodeById(id); if (!obj || !oldCenter) return Promise.resolve();
+    const obj = nodeById(id); if (!obj || !formerAnchor) return Promise.resolve();
     return delay(schedule.former.delay, token).then(() =>
-      guard(followMovingAnchor(obj, oldCenter, {
+      guard(followMovingAnchor(obj, formerAnchor, {
         duration: schedule.former.dur,
         fade: true,
         token,
@@ -470,9 +480,48 @@ if (oldCenter && oldCenter !== clicked) {
     );
   });
 
-  // Parallel wait for all cohorts
-  await Promise.all([prevTask, ...sharedTasks, ...formerTasks, ...freshTasks]);
-  if (token.cancelled) return;
+  // Execute phases
+  if (schedule.gate) {
+    // serial: shared → former → (old center cleanup if needed) → fresh
+    await Promise.all([prevTask, ...sharedTasks]);
+    if (token.cancelled) return;
+
+    await Promise.all(formerTasks);
+    if (token.cancelled) return;
+
+    // After formers are gone, if old center is not in B, remove it gracefully
+    if (oldCenter && oldCenter !== clicked && !prevIsInNew) {
+      await guard(followMovingAnchor(oldCenter, clicked, {
+        duration: 0.5 * D,
+        fade: true,
+        token,
+        onComplete: () => { if (!token.cancelled) removeNode(oldCenter); }
+      }));
+    }
+
+    await Promise.all(freshTasks);
+    if (token.cancelled) return;
+  } else {
+    // parallel/staggered
+    await Promise.all([prevTask, ...sharedTasks, ...formerTasks, ...freshTasks]);
+    if (token.cancelled) return;
+
+    // Optional cleanup for old center if it's not in the new ring
+    if (oldCenter && oldCenter !== clicked && !prevIsInNew) {
+      await guard(followMovingAnchor(oldCenter, clicked, {
+        duration: 0.5 * D,
+        fade: true,
+        token,
+        onComplete: () => { if (!token.cancelled) removeNode(oldCenter); }
+      }));
+    }
+  }
+
+  // Clean up the temporary anchor
+  if (formerAnchor) {
+    scene.remove(formerAnchor);
+    formerAnchor = null;
+  }
 
   // Finalize clickable ring to exactly B
   for (let i = nodeObjects.length - 1; i >= 0; i--) {
@@ -481,7 +530,6 @@ if (oldCenter && oldCenter !== clicked) {
     if (!B.includes(id)) nodeObjects.splice(i, 1);
   }
 }
-
 // --- pointer/orbit handlers ---
 function rotateCamera(dx, dy) {
   const sx = CONFIG.INVERT_X ? -1 : 1;
@@ -531,14 +579,13 @@ document.addEventListener('mouseup', async () => {
 
   const clicked = hits[0].object;
   if (clicked === centeredNode) return;
-  if (!clicked.userData?.id) return; // (#7) safety
+  if (!clicked.userData?.id) return; // safety
 
-  // cancel any running transition before starting a new one (#4)
   TransitionManager.cancelAll();
 
   isTransitioning = true;
   try {
-    await transitionToNode(clicked, CONFIG.TRANSITION_MODE || 'parallel');
+    await transitionToNode(clicked, CONFIG.TRANSITION_MODE || 'serial'); // tip: 'serial' reads cleanest while tuning
   } catch (err) {
     console.error('transition error:', err);
   } finally {
