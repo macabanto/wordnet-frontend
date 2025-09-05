@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { scene, camera, renderer, raycaster, mouse, debugEl, attachResize } from './scene/scene.js';
+import { scene, camera, renderer, raycaster, mouse, attachResize } from './scene/scene.js';
 import { installControls } from './scene/control.js';
 import { nodeObjects } from './graph/state.js';
 import { initialiseScene } from './setup.js';
@@ -8,13 +8,12 @@ import { transitionToNode, TransitionManager } from './flow/transition.js';
 attachResize();
 
 const controls = installControls({
-  camera, renderer, raycaster, mouse, nodeObjects,
+  camera,
+  raycaster,
+  mouse,
+  nodeObjects,
   onClickSprite: async (clicked) => {
-    // same guards you had before
-    const centeredNode = scene?.children?.find?.(() => false) || null; // center is tracked on nodeGroup.userData.center; we guard below
-    if (!clicked?.userData?.id) return;
-    // Don’t compare to centered here; transition function already handles it gracefully.
-
+    if (!clicked?.userData?.id) return; // safety
     TransitionManager.cancelAll();
     try {
       await transitionToNode(clicked, CONFIG.TRANSITION_MODE || 'serial');
@@ -28,11 +27,12 @@ function animate() {
   requestAnimationFrame(animate);
 
   controls.tickInertia();
-  scene.rotation.x = controls.rotation.x;
-  scene.rotation.y = controls.rotation.y;
+  controls.applyQuaternionTo(scene, controls.getAngles());
 
-  // simple debug
-  // (optional) update debugEl with whatever you like
+  // Debug example:
+  // const { yaw, pitch } = controls.getAngles();
+  // document.getElementById('debug').textContent = `yaw=${yaw.toFixed(2)}  pitch=${pitch.toFixed(2)}`;
+
   renderer.render(scene, camera);
 }
 

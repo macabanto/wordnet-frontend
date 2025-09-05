@@ -19,7 +19,7 @@ export const CONFIG = {
 
   CLICK_THRESHOLD_PX: 4,
   INVERT_X: false,
-  INVERT_Y: true,
+  INVERT_Y: false,
   ROT_SPEED: 0.004,
   INERTIA_DECAY: 0.92,
   VELOCITY_EPS: 0.0003,
